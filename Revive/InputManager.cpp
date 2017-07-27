@@ -370,7 +370,7 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 	const bool allButtonsSupported = (buttonSupport & vr::ButtonMaskFromId(vr::k_EButton_A) && buttonSupport & vr::ButtonMaskFromId(k_EButton_B));
 
 	if (state.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_ApplicationMenu))
-		buttons |= (hand == ovrHand_Left) ? ovrButton_Enter : ovrButton_Home;
+		buttons |= ovrButton_Enter;
 
 	if (state.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_A))
 		buttons |= (hand == ovrHand_Left) ? ovrButton_X : ovrButton_A;
@@ -520,7 +520,8 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 				m_StickTouched = false;
 				m_ThumbStick.x = m_ThumbStick.y = 0.0f;
 
-				touches |= (hand == ovrHand_Left) ? ovrTouch_LThumbUp : ovrTouch_RThumbUp;
+				if (m_Gripped)
+					touches |= (hand == ovrHand_Left) ? ovrTouch_LThumbUp : ovrTouch_RThumbUp;
 			}
 
 			if (state.ulButtonPressed & vr::ButtonMaskFromId(button))
@@ -542,8 +543,8 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 		}
 	}
 
-	if (session->TriggerAsGrip)
-		std::swap(inputState->IndexTrigger[hand], inputState->HandTrigger[hand]);
+	if (session->TriggerAsGrip && !m_Gripped)
+		std::swap(inputState->HandTrigger[hand], inputState->IndexTrigger[hand]);
 
 	// We don't apply deadzones yet on triggers and grips
 	inputState->IndexTriggerNoDeadzone[hand] = inputState->IndexTrigger[hand];

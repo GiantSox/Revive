@@ -28,13 +28,13 @@ function generateManifest(manifest) {
     launch = launch.replace(/\//g, '\\');
 
     var parameters = "";
-    if (manifest["launchParameters"] != "" && manifest["launchParameters"] != "None")
+    if (manifest["launchParameters"] != "" && manifest["launchParameters"] != "None" && manifest["launchParameters"] != null)
         parameters = " " + manifest["launchParameters"];
 
     // Some games need special arguments, seems like a great idea to hardcode them here
     // TODO: Detect these arguments automatically from the file tree
     if (manifest["canonicalName"] == "epic-games-showdown")
-        parameters = " ..\\..\\..\\ShowdownVRDemo\\ShowdownVRDemo.uproject";
+        parameters = " ..\\..\\..\\ShowdownDemo\\ShowdownDemo.uproject";
     if (manifest["canonicalName"] == "hammerhead-vr-abe-vr")
         parameters = " ..\\..\\..\\Abe\\Abe.uproject";
     if (manifest["canonicalName"] == "epic-games-bullet-train-gdc")

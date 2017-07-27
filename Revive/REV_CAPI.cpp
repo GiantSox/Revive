@@ -12,8 +12,6 @@
 
 #include <openvr.h>
 #include <MinHook.h>
-#include <DXGI.h>
-#include <wrl/client.h>
 
 #define REV_DEFAULT_TIMEOUT 10000
 
@@ -192,31 +190,16 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_Create(ovrSession* pSession, ovrGraphicsLuid*
 	vr::VRCompositor()->SetTrackingSpace((vr::ETrackingUniverseOrigin)ovr_GetInt(session, REV_KEY_DEFAULT_ORIGIN, REV_DEFAULT_ORIGIN));
 
 	// Get the LUID for the OpenVR adapter
-	int32_t index;
-	vr::VRSystem()->GetDXGIOutputInfo(&index);
-	if (index == -1)
-		index = 0;
-
-	// Get the DXGI adapter matching the index
-	Microsoft::WRL::ComPtr<IDXGIFactory> pFactory;
-	HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)pFactory.GetAddressOf());
-	if (FAILED(hr))
-		return ovrError_IncompatibleGPU;
-
-	Microsoft::WRL::ComPtr<IDXGIAdapter> pAdapter;
-	hr = pFactory->EnumAdapters(index, pAdapter.GetAddressOf());
-	if (FAILED(hr))
-		return ovrError_MismatchedAdapters;
-
-	DXGI_ADAPTER_DESC desc;
-	hr = pAdapter->GetDesc(&desc);
-	if (FAILED(hr))
+	uint64_t adapter;
+	vr::VRSystem()->GetOutputDevice(&adapter, vr::TextureType_DirectX);
+	if (adapter == 0)
 		return ovrError_MismatchedAdapters;
 
 	// Copy the LUID into the structure
-	static_assert(sizeof(desc.AdapterLuid) == sizeof(ovrGraphicsLuid),
+	static_assert(sizeof(adapter) == sizeof(ovrGraphicsLuid),
 		"The adapter LUID needs to fit in ovrGraphicsLuid");
-	memcpy(pLuid, &desc.AdapterLuid, sizeof(ovrGraphicsLuid));
+	if (pLuid)
+		memcpy(pLuid, &adapter, sizeof(ovrGraphicsLuid));
 
 	*pSession = session;
 	return ovrSuccess;
@@ -1111,6 +1094,40 @@ OVR_PUBLIC_FUNCTION(ovrBool) ovr_SetString(ovrSession session, const char* prope
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_Lookup(const char* name, void** data)
 {
-	// We don't communicate with the Oculus service.
+	// We don't communicate with the ovrServer.
 	return ovrError_ServiceError;
+}
+
+OVR_PUBLIC_FUNCTION(ovrResult) ovr_GetExternalCameras(ovrSession session, ovrExternalCamera* cameras, unsigned int* inoutCameraCount)
+{
+	// TODO: Support externalcamera.cfg used by the SteamVR Unity plugin
+	return ovrError_NoExternalCameraInfo;
+}
+
+OVR_PUBLIC_FUNCTION(ovrResult) ovr_SetExternalCameraProperties(ovrSession session, const char* name, const ovrCameraIntrinsics* const intrinsics, const ovrCameraExtrinsics* const extrinsics)
+{
+	return ovrError_NoExternalCameraInfo;
+}
+
+OVR_PUBLIC_FUNCTION(unsigned int) ovr_GetEnabledCaps(ovrSession session)
+{
+	return 0;
+}
+
+OVR_PUBLIC_FUNCTION(void) ovr_SetEnabledCaps(ovrSession session, unsigned int hmdCaps)
+{
+}
+
+OVR_PUBLIC_FUNCTION(unsigned int) ovr_GetTrackingCaps(ovrSession session)
+{
+	return 0;
+}
+
+OVR_PUBLIC_FUNCTION(ovrResult)
+ovr_ConfigureTracking(
+	ovrSession session,
+	unsigned int requestedTrackingCaps,
+	unsigned int requiredTrackingCaps)
+{
+	return ovrSuccess;
 }
