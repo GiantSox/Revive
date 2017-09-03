@@ -21,7 +21,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{BC34622B-5BFC-42D0-858A-331BECC048AE}</ProjectGuid>
     <RootNamespace>Revive</RootNamespace>
-    <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.15063.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -89,8 +89,8 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>DEBUG;MICROPROFILE_ENABLED=1;MICROPROFILE_GPU_TIMERS=0;OVR_DLL_BUILD;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>DEBUG;VK_NO_PROTOTYPES;MICROPROFILE_ENABLED=1;MICROPROFILE_GPU_TIMERS=0;OVR_DLL_BUILD;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;..\Vulkan\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -120,8 +120,8 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>DEBUG;MICROPROFILE_ENABLED=1;MICROPROFILE_GPU_TIMERS=0;OVR_DLL_BUILD;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>DEBUG;VK_NO_PROTOTYPES;MICROPROFILE_ENABLED=1;MICROPROFILE_GPU_TIMERS=0;OVR_DLL_BUILD;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;..\Vulkan\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -153,8 +153,8 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>OVR_DLL_BUILD;MICROPROFILE_ENABLED=0;MICROPROFILE_GPU_TIMERS=0;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>VK_NO_PROTOTYPES;MICROPROFILE_ENABLED=0;MICROPROFILE_GPU_TIMERS=0;OVR_DLL_BUILD;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;..\Vulkan\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -187,8 +187,8 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>OVR_DLL_BUILD;MICROPROFILE_ENABLED=0;MICROPROFILE_GPU_TIMERS=0;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>VK_NO_PROTOTYPES;MICROPROFILE_ENABLED=0;MICROPROFILE_GPU_TIMERS=0;OVR_DLL_BUILD;GLEW_STATIC;_CRT_SECURE_NO_WARNINGS;_MBCS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\microprofile;..\minhook\include;..\openvr\headers;..\LibOVR\Include;..\glew\include;..\Vulkan\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -224,8 +224,10 @@
     <ClInclude Include="CompositorBase.h" />
     <ClInclude Include="CompositorD3D.h" />
     <ClInclude Include="CompositorGL.h" />
+    <ClInclude Include="CompositorVk.h" />
     <ClInclude Include="HapticsBuffer.h" />
     <ClInclude Include="openvr_beta.h" />
+    <ClInclude Include="OVR_CAPI.h" />
     <ClInclude Include="REV_Math.h" />
     <ClInclude Include="SessionDetails.h" />
     <ClInclude Include="InputManager.h" />
@@ -239,16 +241,19 @@
     <ClInclude Include="..\LibOVR\Include\OVR_ErrorCode.h" />
     <ClInclude Include="..\LibOVR\Include\OVR_Version.h" />
     <ClInclude Include="Assert.h" />
-    <ClInclude Include="Error.h" />
     <ClInclude Include="Settings.h" />
+    <ClInclude Include="SettingsManager.h" />
     <ClInclude Include="TextureBase.h" />
     <ClInclude Include="TextureD3D.h" />
     <ClInclude Include="TextureGL.h" />
+    <ClInclude Include="TextureVk.h" />
+    <ClInclude Include="vulkan.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CompositorBase.cpp" />
     <ClCompile Include="CompositorD3D.cpp" />
     <ClCompile Include="CompositorGL.cpp" />
+    <ClCompile Include="CompositorVk.cpp" />
     <ClCompile Include="HapticsBuffer.cpp" />
     <ClCompile Include="REV_CAPI_Vk.cpp" />
     <ClCompile Include="SessionDetails.cpp" />
@@ -260,9 +265,11 @@
     <ClCompile Include="REV_CAPI_D3D.cpp" />
     <ClCompile Include="REV_CAPI_GL.cpp" />
     <ClCompile Include="Session.cpp" />
+    <ClCompile Include="SettingsManager.cpp" />
     <ClCompile Include="TextureBase.cpp" />
     <ClCompile Include="TextureD3D.cpp" />
     <ClCompile Include="TextureGL.cpp" />
+    <ClCompile Include="TextureVk.cpp" />
     <ClCompile Include="xinput.cpp" />
   </ItemGroup>
   <ItemGroup>

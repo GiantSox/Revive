@@ -1,6 +1,9 @@
 #include "CompositorBase.h"
 #include "OVR_CAPI.h"
 #include "REV_Math.h"
+#include "Settings.h"
+#include "Session.h"
+#include "SessionDetails.h"
 #include "microprofile.h"
 
 #include <openvr.h>
@@ -9,9 +12,29 @@
 
 #define REV_LAYER_BIAS 0.0001f
 
-MICROPROFILE_DEFINE(SubmitFrame, "Compositor", "SubmitFrame", 0x00ff00);
+MICROPROFILE_DEFINE(WaitToBeginFrame, "Compositor", "WaitFrame", 0x00ff00);
+MICROPROFILE_DEFINE(BeginFrame, "Compositor", "BeginFrame", 0x00ff00);
+MICROPROFILE_DEFINE(EndFrame, "Compositor", "EndFrame", 0x00ff00);
 MICROPROFILE_DEFINE(SubmitFovLayer, "Compositor", "SubmitFovLayer", 0x00ff00);
 MICROPROFILE_DEFINE(SubmitSceneLayer, "Compositor", "SubmitSceneLayer", 0x00ff00);
+
+ovrResult rev_CompositorErrorToOvrError(vr::EVRCompositorError error)
+{
+	switch (error)
+	{
+	case vr::VRCompositorError_None: return ovrSuccess;
+	case vr::VRCompositorError_IncompatibleVersion: return ovrError_ServiceError;
+	case vr::VRCompositorError_DoNotHaveFocus: return ovrSuccess_NotVisible;
+	case vr::VRCompositorError_InvalidTexture: return ovrError_TextureSwapChainInvalid;
+	case vr::VRCompositorError_IsNotSceneApplication: return ovrError_InvalidSession;
+	case vr::VRCompositorError_TextureIsOnWrongDevice: return ovrError_TextureSwapChainInvalid;
+	case vr::VRCompositorError_TextureUsesUnsupportedFormat: return ovrError_TextureSwapChainInvalid;
+	case vr::VRCompositorError_SharedTexturesNotSupported: return ovrError_TextureSwapChainInvalid;
+	case vr::VRCompositorError_IndexOutOfRange: return ovrError_InvalidParameter;
+	default: return ovrError_RuntimeException;
+	}
+}
+
 
 CompositorBase::CompositorBase()
 	: m_MirrorTexture(nullptr)
@@ -26,9 +49,75 @@ CompositorBase::~CompositorBase()
 		delete m_MirrorTexture;
 }
 
-vr::EVRCompositorError CompositorBase::SubmitFrame(ovrLayerHeader const * const * layerPtrList, unsigned int layerCount)
+ovrResult CompositorBase::CreateTextureSwapChain(const ovrTextureSwapChainDesc* desc, ovrTextureSwapChain* out_TextureSwapChain)
 {
-	MICROPROFILE_SCOPE(SubmitFrame);
+	ovrTextureSwapChain swapChain = new ovrTextureSwapChainData(*desc);
+	swapChain->Identifier = m_ChainCount++;
+
+	// FIXME: A bug in OpenVR causes Asynchronous Reprojection to fail with swapchains
+	if (GetAPI() == vr::TextureType_OpenGL)
+		swapChain->Length = 1;
+
+	for (int i = 0; i < swapChain->Length; i++)
+	{
+		TextureBase* texture = CreateTexture();
+		bool success = texture->Init(desc->Type, desc->Width, desc->Height, desc->MipLevels,
+			desc->ArraySize, desc->Format, desc->MiscFlags, desc->BindFlags);
+		if (!success)
+			return ovrError_RuntimeException;
+		swapChain->Textures[i].reset(texture);
+	}
+
+	*out_TextureSwapChain = swapChain;
+	return ovrSuccess;
+}
+
+ovrResult CompositorBase::CreateMirrorTexture(const ovrMirrorTextureDesc* desc, ovrMirrorTexture* out_MirrorTexture)
+{
+	// There can only be one mirror texture at a time
+	if (m_MirrorTexture)
+		return ovrError_RuntimeException;
+
+	ovrMirrorTexture mirrorTexture = new ovrMirrorTextureData(*desc);
+	TextureBase* texture = CreateTexture();
+	bool success = texture->Init(ovrTexture_2D, desc->Width, desc->Height, 1, 1, desc->Format,
+		desc->MiscFlags | ovrTextureMisc_AllowGenerateMips, ovrTextureBind_DX_RenderTarget);
+	if (!success)
+		return ovrError_RuntimeException;
+	mirrorTexture->Texture.reset(texture);
+
+	m_MirrorTexture = mirrorTexture;
+	*out_MirrorTexture = mirrorTexture;
+	return ovrSuccess;
+}
+
+ovrResult CompositorBase::WaitToBeginFrame(ovrSession session, long long frameIndex)
+{
+	MICROPROFILE_SCOPE(WaitToBeginFrame);
+
+	vr::EVRCompositorError err = vr::VRCompositorError_None;
+	for (long long index = session->FrameIndex; index < frameIndex; index++)
+	{
+		// Call WaitGetPoses to block until the running start, also known as queue-ahead in the Oculus SDK.
+		err = vr::VRCompositor()->WaitGetPoses(nullptr, 0, nullptr, 0);
+	}
+	return rev_CompositorErrorToOvrError(err);
+}
+
+ovrResult CompositorBase::BeginFrame(ovrSession session, long long frameIndex)
+{
+	MICROPROFILE_SCOPE(BeginFrame);
+
+	session->FrameIndex = frameIndex;
+	return ovrSuccess;
+}
+
+ovrResult CompositorBase::EndFrame(ovrSession session, ovrLayerHeader const * const * layerPtrList, unsigned int layerCount)
+{
+	MICROPROFILE_SCOPE(EndFrame);
+
+	if (layerCount == 0 || !layerPtrList)
+		return ovrError_InvalidParameter;
 
 	// Flush all pending draw calls.
 	Flush();
@@ -120,10 +209,7 @@ vr::EVRCompositorError CompositorBase::SubmitFrame(ovrLayerHeader const * const 
 	if (m_SceneLayer && m_SceneLayer->Type == ovrLayerType_EyeFov)
 	{
 		ovrLayerEyeFov* sceneLayer = (ovrLayerEyeFov*)m_SceneLayer;
-		error = SubmitSceneLayer(sceneLayer->Viewport, sceneLayer->Fov, sceneLayer->ColorTexture, sceneLayer->RenderPose, sceneLayer->Header.Flags);
-
-		if (m_MirrorTexture && error == vr::VRCompositorError_None)
-			RenderMirrorTexture(m_MirrorTexture, sceneLayer->ColorTexture);
+		error = SubmitSceneLayer(session, sceneLayer->Viewport, sceneLayer->Fov, sceneLayer->ColorTexture, sceneLayer->RenderPose, sceneLayer->Header.Flags);
 	}
 	else if (m_SceneLayer && m_SceneLayer->Type == ovrLayerType_EyeMatrix)
 	{
@@ -134,15 +220,20 @@ vr::EVRCompositorError CompositorBase::SubmitFrame(ovrLayerHeader const * const 
 			MatrixToFovPort(sceneLayer->Matrix[ovrEye_Right])
 		};
 
-		error = SubmitSceneLayer(sceneLayer->Viewport, fov, sceneLayer->ColorTexture, sceneLayer->RenderPose, sceneLayer->Header.Flags);
-
-		if (m_MirrorTexture && error == vr::VRCompositorError_None)
-			RenderMirrorTexture(m_MirrorTexture, sceneLayer->ColorTexture);
+		error = SubmitSceneLayer(session, sceneLayer->Viewport, fov, sceneLayer->ColorTexture, sceneLayer->RenderPose, sceneLayer->Header.Flags);
 	}
+
+	if (m_MirrorTexture && error == vr::VRCompositorError_None)
+		RenderMirrorTexture(m_MirrorTexture);
 
 	m_SceneLayer = nullptr;
 
-	return error;
+	// Flip the profiler.
+	MicroProfileFlip();
+
+	vr::VRCompositor()->GetCumulativeStats(&session->Stats[session->FrameIndex % ovrMaxProvidedFrameStats], sizeof(vr::Compositor_CumulativeStats));
+
+	return rev_CompositorErrorToOvrError(error);
 }
 
 vr::VROverlayHandle_t CompositorBase::CreateOverlay()
@@ -249,7 +340,7 @@ void CompositorBase::SubmitFovLayer(ovrRecti viewport[ovrEye_Count], ovrFovPort 
 		swapChain[ovrEye_Right]->Submit();
 }
 
-vr::VRCompositorError CompositorBase::SubmitSceneLayer(ovrRecti viewport[ovrEye_Count], ovrFovPort fov[ovrEye_Count], ovrTextureSwapChain swapChain[ovrEye_Count], ovrPosef renderPose[ovrEye_Count], unsigned int flags)
+vr::VRCompositorError CompositorBase::SubmitSceneLayer(ovrSession session, ovrRecti viewport[ovrEye_Count], ovrFovPort fov[ovrEye_Count], ovrTextureSwapChain swapChain[ovrEye_Count], ovrPosef renderPose[ovrEye_Count], unsigned int flags)
 {
 	MICROPROFILE_SCOPE(SubmitSceneLayer);
 
@@ -258,7 +349,9 @@ vr::VRCompositorError CompositorBase::SubmitSceneLayer(ovrRecti viewport[ovrEye_
 		swapChain[ovrEye_Right] = swapChain[ovrEye_Left];
 
 	MICROPROFILE_META_CPU("SwapChain Right", swapChain[ovrEye_Right]->Identifier);
+	MICROPROFILE_META_CPU("Right Submit", swapChain[ovrEye_Right]->SubmitIndex);
 	MICROPROFILE_META_CPU("SwapChain Left", swapChain[ovrEye_Left]->Identifier);
+	MICROPROFILE_META_CPU("Left Submit", swapChain[ovrEye_Left]->SubmitIndex);
 
 	// Submit the scene layer.
 	vr::VRCompositorError err;
@@ -267,8 +360,11 @@ vr::VRCompositorError CompositorBase::SubmitSceneLayer(ovrRecti viewport[ovrEye_
 		ovrTextureSwapChain chain = swapChain[i];
 		vr::VRTextureBounds_t bounds = ViewportToTextureBounds(viewport[i], swapChain[i], flags);
 
+		// Get the descriptor for this eye
+		ovrEyeRenderDesc* desc = session->Details->RenderDesc[i];
+
 		// Shrink the bounds to account for the overlapping fov
-		vr::VRTextureBounds_t fovBounds = FovPortToTextureBounds((ovrEyeType)i, fov[i]);
+		vr::VRTextureBounds_t fovBounds = FovPortToTextureBounds(desc->Fov, fov[i]);
 
 		// Combine the fov bounds with the viewport bounds
 		bounds.uMin += fovBounds.uMin * bounds.uMax;
@@ -276,9 +372,19 @@ vr::VRCompositorError CompositorBase::SubmitSceneLayer(ovrRecti viewport[ovrEye_
 		bounds.vMin += fovBounds.vMin * bounds.vMax;
 		bounds.vMax *= fovBounds.vMax;
 
-		// Add the pose data to the eye texture
 		vr::VRTextureWithPose_t texture = chain->Textures[chain->SubmitIndex]->ToVRTexture();
-		texture.mDeviceToAbsoluteTracking = REV::Matrix4f(renderPose[i]);
+
+		// Add the pose data to the eye texture
+		REV::Matrix4f pose(renderPose[i]);
+		if (session->TrackingOrigin == vr::TrackingUniverseSeated)
+		{
+			REV::Matrix4f offset(vr::VRSystem()->GetSeatedZeroPoseToStandingAbsoluteTrackingPose());
+			texture.mDeviceToAbsoluteTracking = REV::Matrix4f(offset * pose);
+		}
+		else
+		{
+			texture.mDeviceToAbsoluteTracking = pose;
+		}
 
 		err = vr::VRCompositor()->Submit((vr::EVREye)i, (vr::Texture_t*)&texture, &bounds, vr::Submit_TextureWithPose);
 		if (err != vr::VRCompositorError_None)
@@ -297,19 +403,15 @@ void CompositorBase::SetMirrorTexture(ovrMirrorTexture mirrorTexture)
 	m_MirrorTexture = mirrorTexture;
 }
 
-vr::VRTextureBounds_t CompositorBase::FovPortToTextureBounds(ovrEyeType eye, ovrFovPort fov)
+vr::VRTextureBounds_t CompositorBase::FovPortToTextureBounds(ovrFovPort eyeFov, ovrFovPort fov)
 {
 	vr::VRTextureBounds_t result;
 
-	// Get the headset field-of-view
-	float left, right, top, bottom;
-	vr::VRSystem()->GetProjectionRaw((vr::EVREye)eye, &left, &right, &top, &bottom);
-
 	// Adjust the bounds based on the field-of-view in the game
-	result.uMin = 0.5f + 0.5f * left / fov.LeftTan;
-	result.uMax = 0.5f + 0.5f * right / fov.RightTan;
-	result.vMin = 0.5f - 0.5f * bottom / fov.UpTan;
-	result.vMax = 0.5f - 0.5f * top / fov.DownTan;
+	result.uMin = 0.5f - 0.5f * eyeFov.LeftTan / fov.LeftTan;
+	result.uMax = 0.5f + 0.5f * eyeFov.RightTan / fov.RightTan;
+	result.vMin = 0.5f - 0.5f * eyeFov.UpTan / fov.UpTan;
+	result.vMax = 0.5f + 0.5f * eyeFov.DownTan / fov.DownTan;
 
 	// Sanitize the output
 	if (result.uMin < 0.0)

@@ -32,69 +32,63 @@ CompositorGL* CompositorGL::Create()
 
 CompositorGL::CompositorGL()
 {
-	// TODO: Get the mirror views from OpenVR once they fix the OpenGL implementation.
+	// Get the mirror textures
+	glGenFramebuffers(ovrEye_Count, m_mirrorFB);
+	for (int i = 0; i < ovrEye_Count; i++)
+	{
+		vr::VRCompositor()->GetMirrorTextureGL((vr::EVREye)i, &m_mirror[i].first, &m_mirror[i].second);
+
+		GLint drawFboId = 0, readFboId = 0;
+		glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFboId);
+		glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFboId);
+
+		glBindFramebuffer(GL_FRAMEBUFFER, m_mirrorFB[i]);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_mirror[i].first, 0);
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
+		glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFboId);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, readFboId);
+	}
 }
 
 CompositorGL::~CompositorGL()
 {
+	for (int i = 0; i < ovrEye_Count; i++)
+		vr::VRCompositor()->ReleaseSharedGLTexture(m_mirror[i].first, m_mirror[i].second);
 }
 
-ovrResult CompositorGL::CreateTextureSwapChain(const ovrTextureSwapChainDesc* desc, ovrTextureSwapChain* out_TextureSwapChain)
+TextureBase* CompositorGL::CreateTexture()
 {
-	ovrTextureSwapChain swapChain = new ovrTextureSwapChainData(vr::TextureType_OpenGL, *desc);
-	swapChain->Identifier = m_ChainCount++;
-
-	for (int i = 0; i < swapChain->Length; i++)
-	{
-		TextureGL* texture = new TextureGL();
-		bool success = texture->Create(desc->Width, desc->Height, desc->MipLevels, desc->ArraySize, desc->Format,
-			desc->MiscFlags, desc->BindFlags);
-		if (!success)
-			return ovrError_RuntimeException;
-		swapChain->Textures[i].reset(texture);
-	}
-
-	*out_TextureSwapChain = swapChain;
-	return ovrSuccess;
+	return new TextureGL();
 }
 
-ovrResult CompositorGL::CreateMirrorTexture(const ovrMirrorTextureDesc* desc, ovrMirrorTexture* out_MirrorTexture)
-{
-	// There can only be one mirror texture at a time
-	if (m_MirrorTexture)
-		return ovrError_RuntimeException;
-
-	ovrMirrorTexture mirrorTexture = new ovrMirrorTextureData(vr::TextureType_OpenGL, *desc);
-	TextureGL* texture = new TextureGL();
-	bool success = texture->Create(desc->Width, desc->Height, 1, 1, desc->Format,
-		desc->MiscFlags, 0);
-	if (!success)
-		return ovrError_RuntimeException;
-	mirrorTexture->Texture.reset(texture);
-
-	m_MirrorTexture = mirrorTexture;
-	*out_MirrorTexture = mirrorTexture;
-	return ovrSuccess;
-}
-
-void CompositorGL::RenderMirrorTexture(ovrMirrorTexture mirrorTexture, ovrTextureSwapChain swapChain[ovrEye_Count])
+void CompositorGL::RenderMirrorTexture(ovrMirrorTexture mirrorTexture)
 {
 	uint32_t width, height;
 	vr::VRSystem()->GetRecommendedRenderTargetSize(&width, &height);
+
+	GLint drawFboId = 0, readFboId = 0;
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFboId);
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFboId);
 
 	TextureGL* texture = (TextureGL*)mirrorTexture->Texture.get();
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, texture->Framebuffer);
 
 	for (int i = 0; i < ovrEye_Count; i++)
 	{
-		ovrTextureSwapChain chain = swapChain[i];
-		TextureGL* source = (TextureGL*)chain->Textures[chain->SubmitIndex].get();
+		vr::VRCompositor()->LockGLSharedTextureForAccess(m_mirror[i].second);
 
 		// Bind the buffer to copy from the compositor to the mirror texture
-		glBindFramebuffer(GL_READ_FRAMEBUFFER, source->Framebuffer);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, m_mirrorFB[i]);
 		GLint offset = (mirrorTexture->Desc.Width / 2) * i;
-		glBlitFramebuffer(0, 0, width, height, offset, mirrorTexture->Desc.Height, offset + mirrorTexture->Desc.Width / 2, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+		glBlitFramebuffer(0, 0, width, height, offset, 0, offset + mirrorTexture->Desc.Width / 2, mirrorTexture->Desc.Height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+		vr::VRCompositor()->UnlockGLSharedTextureForAccess(m_mirror[i].second);
 	}
+
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFboId);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, readFboId);
 }
 
 void CompositorGL::RenderTextureSwapChain(vr::EVREye eye, ovrTextureSwapChain swapChain, ovrTextureSwapChain sceneChain, ovrRecti viewport, vr::VRTextureBounds_t bounds, vr::HmdVector4_t quad)

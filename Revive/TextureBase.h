@@ -6,7 +6,7 @@
 
 #include <memory>
 
-#define REV_SWAPCHAIN_LENGTH 2
+#define REV_SWAPCHAIN_MAX_LENGTH 3
 
 class TextureBase
 {
@@ -15,32 +15,32 @@ public:
 	virtual ~TextureBase() { };
 
 	virtual vr::VRTextureWithPose_t ToVRTexture() = 0;
-	virtual bool Create(int Width, int Height, int MipLevels, int ArraySize,
-		ovrTextureFormat Format, unsigned int MiscFlags, unsigned int BindFlags) = 0;
+	virtual bool Init(ovrTextureType type, int width, int height, int mipLevels, int arraySize,
+		ovrTextureFormat format, unsigned int miscFlags, unsigned int bindFlags) = 0;
 };
 
 struct ovrTextureSwapChainData
 {
 	ovrTextureSwapChainDesc Desc;
-	vr::ETextureType ApiType;
 	vr::VROverlayHandle_t Overlay;
 
 	unsigned int Identifier;
 	int Length, CurrentIndex, SubmitIndex;
-	std::unique_ptr<TextureBase> Textures[REV_SWAPCHAIN_LENGTH];
+	std::unique_ptr<TextureBase> Textures[REV_SWAPCHAIN_MAX_LENGTH];
 
 	bool Full() { return (CurrentIndex + 1) % Length == SubmitIndex; }
 	void Commit() { CurrentIndex++; CurrentIndex %= Length; };
 	void Submit() { SubmitIndex++; SubmitIndex %= Length; };
 
-	ovrTextureSwapChainData(vr::ETextureType api, ovrTextureSwapChainDesc desc);
+	ovrTextureSwapChainData(ovrTextureSwapChainDesc desc);
+	~ovrTextureSwapChainData();
 };
 
 struct ovrMirrorTextureData
 {
 	ovrMirrorTextureDesc Desc;
-	vr::ETextureType ApiType;
 	std::unique_ptr<TextureBase> Texture;
 
-	ovrMirrorTextureData(vr::ETextureType api, ovrMirrorTextureDesc desc);
+	ovrMirrorTextureData(ovrMirrorTextureDesc desc);
+	~ovrMirrorTextureData();
 };

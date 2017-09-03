@@ -4,19 +4,53 @@
 
 #include "Assert.h"
 #include "Session.h"
-#include "Error.h"
 #include "CompositorBase.h"
 #include "SessionDetails.h"
 #include "InputManager.h"
 #include "Settings.h"
+#include "SettingsManager.h"
 
 #include <openvr.h>
 #include <MinHook.h>
 
 #define REV_DEFAULT_TIMEOUT 10000
 
-vr::EVRInitError g_InitError = vr::VRInitError_None;
+vr::EVRInitError g_InitError = vr::VRInitError_Init_NotInitialized;
 uint32_t g_MinorVersion = OVR_MINOR_VERSION;
+
+ovrResult rev_InitErrorToOvrError(vr::EVRInitError error)
+{
+	switch (error)
+	{
+	case vr::VRInitError_None: return ovrSuccess;
+	case vr::VRInitError_Unknown: return ovrError_Initialize;
+	case vr::VRInitError_Init_InstallationNotFound: return ovrError_LibLoad;
+	case vr::VRInitError_Init_InstallationCorrupt: return ovrError_LibLoad;
+	case vr::VRInitError_Init_VRClientDLLNotFound: return ovrError_LibLoad;
+	case vr::VRInitError_Init_FileNotFound: return ovrError_LibLoad;
+	case vr::VRInitError_Init_FactoryNotFound: return ovrError_ServiceConnection;
+	case vr::VRInitError_Init_InterfaceNotFound: return ovrError_ServiceConnection;
+	case vr::VRInitError_Init_InvalidInterface: return ovrError_MismatchedAdapters;
+	case vr::VRInitError_Init_UserConfigDirectoryInvalid: return ovrError_Initialize;
+	case vr::VRInitError_Init_HmdNotFound: return ovrError_NoHmd;
+	case vr::VRInitError_Init_NotInitialized: return ovrError_Initialize;
+	case vr::VRInitError_Init_PathRegistryNotFound: return ovrError_Initialize;
+	case vr::VRInitError_Init_NoConfigPath: return ovrError_Initialize;
+	case vr::VRInitError_Init_NoLogPath: return ovrError_Initialize;
+	case vr::VRInitError_Init_PathRegistryNotWritable: return ovrError_Initialize;
+	case vr::VRInitError_Init_AppInfoInitFailed: return ovrError_ServerStart;
+		//case vr::VRInitError_Init_Retry: return ovrError_Reinitialization; // Internal
+	case vr::VRInitError_Init_InitCanceledByUser: return ovrError_Initialize;
+	case vr::VRInitError_Init_AnotherAppLaunching: return ovrError_ServerStart;
+	case vr::VRInitError_Init_SettingsInitFailed: return ovrError_Initialize;
+	case vr::VRInitError_Init_ShuttingDown: return ovrError_ServerStart;
+	case vr::VRInitError_Init_TooManyObjects: return ovrError_Initialize;
+	case vr::VRInitError_Init_NoServerForBackgroundApp: return ovrError_ServerStart;
+	case vr::VRInitError_Init_NotSupportedWithCompositor: return ovrError_Initialize;
+	case vr::VRInitError_Init_NotAvailableToUtilityApps: return ovrError_Initialize;
+	default: return ovrError_RuntimeException;
+	}
+}
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_Initialize(const ovrInitParams* params)
 {
@@ -89,89 +123,39 @@ OVR_PUBLIC_FUNCTION(ovrHmdDesc) ovr_GetHmdDesc(ovrSession session)
 {
 	REV_TRACE(ovr_GetHmdDesc);
 
-	ovrHmdDesc desc;
-	desc.Type = ovrHmd_CV1;
-
-	// Get HMD name
-	vr::VRSystem()->GetStringTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_ModelNumber_String, desc.ProductName, 64);
-	vr::VRSystem()->GetStringTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_ManufacturerName_String, desc.Manufacturer, 64);
-
-	// Some games require a fake product name
-	if (session && session->Details->UseHack(SessionDetails::HACK_FAKE_PRODUCT_NAME))
-		strncpy(desc.ProductName, "Oculus Rift", 64);
-
-	// TODO: Get HID information
-	desc.VendorId = 0;
-	desc.ProductId = 0;
-
-	// Get serial number
-	vr::VRSystem()->GetStringTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_SerialNumber_String, desc.SerialNumber, 24);
-
-	// TODO: Get firmware version
-	desc.FirmwareMajor = 0;
-	desc.FirmwareMinor = 0;
-
-	// Get capabilities
-	desc.AvailableHmdCaps = 0;
-	desc.DefaultHmdCaps = 0;
-	desc.AvailableTrackingCaps = ovrTrackingCap_Orientation | ovrTrackingCap_Position;
-	if (!vr::VRSystem()->GetBoolTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_WillDriftInYaw_Bool))
-		desc.AvailableTrackingCaps |= ovrTrackingCap_MagYawCorrection;
-	desc.DefaultTrackingCaps = ovrTrackingCap_Orientation | ovrTrackingCap_MagYawCorrection | ovrTrackingCap_Position;
-
-	// Get field-of-view
-	for (int i = 0; i < ovrEye_Count; i++)
+	if (!session)
 	{
-		ovrFovPort eye;
-		vr::VRSystem()->GetProjectionRaw((vr::EVREye)i, &eye.LeftTan, &eye.RightTan, &eye.DownTan, &eye.UpTan);
-		eye.LeftTan *= -1.0f;
-		eye.DownTan *= -1.0f;
-		desc.DefaultEyeFov[i] = eye;
-		desc.MaxEyeFov[i] = eye;
+		ovrHmdDesc desc = {};
+		desc.Type = vr::VR_IsHmdPresent() ? ovrHmd_CV1 : ovrHmd_None;
+		return desc;
 	}
 
-	// Get display properties
-	vr::VRSystem()->GetRecommendedRenderTargetSize((uint32_t*)&desc.Resolution.w, (uint32_t*)&desc.Resolution.h);
-	desc.Resolution.w *= 2; // Both eye ports
-	desc.DisplayRefreshRate = vr::VRSystem()->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_DisplayFrequency_Float);
-
-	return desc;
+	return *session->Details->HmdDesc;
 }
 
 OVR_PUBLIC_FUNCTION(unsigned int) ovr_GetTrackerCount(ovrSession session)
 {
 	REV_TRACE(ovr_GetTrackerCount);
 
-	uint32_t count = vr::VRSystem()->GetSortedTrackedDeviceIndicesOfClass(vr::TrackedDeviceClass_TrackingReference, nullptr, 0);
+	if (!session)
+		return ovrError_InvalidSession;
 
-	return count;
+	return (unsigned int)session->Details->TrackerCount;
 }
 
 OVR_PUBLIC_FUNCTION(ovrTrackerDesc) ovr_GetTrackerDesc(ovrSession session, unsigned int trackerDescIndex)
 {
 	REV_TRACE(ovr_GetTrackerDesc);
 
-	// Get the index for this tracker.
-	vr::TrackedDeviceIndex_t trackers[vr::k_unMaxTrackedDeviceCount];
-	vr::VRSystem()->GetSortedTrackedDeviceIndicesOfClass(vr::TrackedDeviceClass_TrackingReference, trackers, vr::k_unMaxTrackedDeviceCount);
-	vr::TrackedDeviceIndex_t index = trackers[trackerDescIndex];
+	if (!session)
+		return ovrTrackerDesc();
 
-	// Fill the descriptor.
-	ovrTrackerDesc desc;
+	ovrTrackerDesc* pDesc = session->Details->TrackerDesc[trackerDescIndex];
 
-	// Calculate field-of-view.
-	float left = vr::VRSystem()->GetFloatTrackedDeviceProperty(index, vr::Prop_FieldOfViewLeftDegrees_Float);
-	float right = vr::VRSystem()->GetFloatTrackedDeviceProperty(index, vr::Prop_FieldOfViewRightDegrees_Float);
-	float top = vr::VRSystem()->GetFloatTrackedDeviceProperty(index, vr::Prop_FieldOfViewTopDegrees_Float);
-	float bottom = vr::VRSystem()->GetFloatTrackedDeviceProperty(index, vr::Prop_FieldOfViewBottomDegrees_Float);
-	desc.FrustumHFovInRadians = OVR::DegreeToRad(left + right);
-	desc.FrustumVFovInRadians = OVR::DegreeToRad(top + bottom);
+	if (!pDesc)
+		return ovrTrackerDesc();
 
-	// Get the tracking frustum.
-	desc.FrustumNearZInMeters = vr::VRSystem()->GetFloatTrackedDeviceProperty(index, vr::Prop_TrackingRangeMinimumMeters_Float);
-	desc.FrustumFarZInMeters = vr::VRSystem()->GetFloatTrackedDeviceProperty(index, vr::Prop_TrackingRangeMaximumMeters_Float);
-
-	return desc;
+	return *pDesc;
 }
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_Create(ovrSession* pSession, ovrGraphicsLuid* pLuid)
@@ -185,9 +169,6 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_Create(ovrSession* pSession, ovrGraphicsLuid*
 
 	// Initialize the opaque pointer with our own OpenVR-specific struct
 	ovrSession session = new ovrHmdStruct();
-
-	// Get the default universe origin from the settings
-	vr::VRCompositor()->SetTrackingSpace((vr::ETrackingUniverseOrigin)ovr_GetInt(session, REV_KEY_DEFAULT_ORIGIN, REV_DEFAULT_ORIGIN));
 
 	// Get the LUID for the OpenVR adapter
 	uint64_t adapter;
@@ -222,38 +203,23 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_GetSessionStatus(ovrSession session, ovrSessi
 	if (!sessionStatus)
 		return ovrError_InvalidParameter;
 
-	// Check for quit event
-	// TODO: The SteamVR beta has a tendency to hang here for some unknown reason
-	// re-enable this code when the bug is fixed.
-#if 0
-	vr::VREvent_t ev;
-	while (vr::VRSystem()->PollNextEvent(&ev, sizeof(vr::VREvent_t)))
-	{
-		if (ev.eventType == vr::VREvent_Quit)
-		{
-			session->ShouldQuit = true;
-			vr::VRSystem()->AcknowledgeQuit_Exiting();
-		}
-	}
-#endif
+	// Detect if the application has focus, but only return false the first time the status is requested.
+	// If this is true from the first call then some games will assume the Health-and-Safety warning
+	// is still being displayed.
+	static bool firstCall = true;
+	sessionStatus->IsVisible = vr::VRCompositor()->CanRenderScene() && !firstCall;
+	firstCall = false;
+
+	SessionStatusBits status = session->SessionStatus;
 
 	// Don't use the activity level while debugging, so I don't have to put on the HMD
-	vr::EDeviceActivityLevel activityLevel = vr::k_EDeviceActivityLevel_Unknown;
-	if (!session->IgnoreActivity)
-		activityLevel = vr::VRSystem()->GetTrackedDeviceActivityLevel(vr::k_unTrackedDeviceIndex_Hmd);
-
-	// Detect if the application has focus, but only return false the first time the status is requested.
-	// If this is true from the beginning then some games will assume the Health-and-Safety warning
-	// is still being displayed.
-	sessionStatus->IsVisible = vr::VRCompositor()->CanRenderScene() && session->IsVisible;
-	session->IsVisible = true;
+	sessionStatus->HmdPresent = status.HmdPresent;
+	sessionStatus->HmdMounted = status.HmdMounted;
 
 	// TODO: Detect if the display is lost, can this ever happen with OpenVR?
-	sessionStatus->HmdPresent = vr::VRSystem()->IsTrackedDeviceConnected(vr::k_unTrackedDeviceIndex_Hmd);
-	sessionStatus->HmdMounted = (activityLevel == vr::k_EDeviceActivityLevel_UserInteraction || activityLevel == vr::k_EDeviceActivityLevel_Unknown);
-	sessionStatus->DisplayLost = false;
-	sessionStatus->ShouldQuit = session->ShouldQuit;
-	sessionStatus->ShouldRecenter = false;
+	sessionStatus->DisplayLost = status.DisplayLost;
+	sessionStatus->ShouldQuit = status.ShouldQuit;
+	sessionStatus->ShouldRecenter = status.ShouldRecenter;
 
 	return ovrSuccess;
 }
@@ -266,7 +232,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_SetTrackingOriginType(ovrSession session, ovr
 		return ovrError_InvalidSession;
 
 	// Both enums match exactly, so we can just cast them
-	vr::VRCompositor()->SetTrackingSpace((vr::ETrackingUniverseOrigin)origin);
+	session->TrackingOrigin = (vr::ETrackingUniverseOrigin)origin;
 	return ovrSuccess;
 }
 
@@ -278,7 +244,7 @@ OVR_PUBLIC_FUNCTION(ovrTrackingOrigin) ovr_GetTrackingOriginType(ovrSession sess
 		return ovrTrackingOrigin_EyeLevel;
 
 	// Both enums match exactly, so we can just cast them
-	return (ovrTrackingOrigin)vr::VRCompositor()->GetTrackingSpace();
+	return (ovrTrackingOrigin)session->TrackingOrigin;
 }
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_RecenterTrackingOrigin(ovrSession session)
@@ -443,7 +409,7 @@ OVR_PUBLIC_FUNCTION(unsigned int) ovr_GetConnectedControllerTypes(ovrSession ses
 {
 	REV_TRACE(ovr_GetConnectedControllerTypes);
 
-	return session->Input->GetConnectedControllerTypes();
+	return session->Input->ConnectedControllers;
 }
 
 OVR_PUBLIC_FUNCTION(ovrTouchHapticsDesc) ovr_GetTouchHapticsDesc(ovrSession session, ovrControllerType controllerType)
@@ -460,7 +426,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_SetControllerVibration(ovrSession session, ov
 	if (!session)
 		return ovrError_InvalidSession;
 
-	return session->Input->SetControllerVibration(controllerType, frequency, amplitude);
+	return session->Input->SetControllerVibration(session, controllerType, frequency, amplitude);
 }
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_SubmitControllerVibration(ovrSession session, ovrControllerType controllerType, const ovrHapticsBuffer* buffer)
@@ -470,7 +436,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_SubmitControllerVibration(ovrSession session,
 	if (!session)
 		return ovrError_InvalidSession;
 
-	return session->Input->SubmitControllerVibration(controllerType, buffer);
+	return session->Input->SubmitControllerVibration(session, controllerType, buffer);
 }
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_GetControllerVibrationState(ovrSession session, ovrControllerType controllerType, ovrHapticsPlaybackState* outState)
@@ -480,7 +446,7 @@ OVR_PUBLIC_FUNCTION(ovrResult) ovr_GetControllerVibrationState(ovrSession sessio
 	if (!session)
 		return ovrError_InvalidSession;
 
-	return session->Input->GetControllerVibrationState(controllerType, outState);
+	return session->Input->GetControllerVibrationState(session, controllerType, outState);
 }
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_TestBoundary(ovrSession session, ovrTrackedDeviceType deviceBitmask,
@@ -718,79 +684,120 @@ OVR_PUBLIC_FUNCTION(ovrSizei) ovr_GetFovTextureSize(ovrSession session, ovrEyeTy
 {
 	REV_TRACE(ovr_GetFovTextureSize);
 
-	ovrSizei size;
-	vr::VRSystem()->GetRecommendedRenderTargetSize((uint32_t*)&size.w, (uint32_t*)&size.h);
-
-	// Check if an override for pixelsPerDisplayPixel is present
-	if (session && session->PixelsPerDisplayPixel > 0.0f)
-		pixelsPerDisplayPixel = session->PixelsPerDisplayPixel;
+	// Get the descriptor for this eye
+	ovrEyeRenderDesc* desc = session->Details->RenderDesc[eye];
+	ovrSizei size = desc->DistortedViewport.Size;
 
 	// Grow the recommended size to account for the overlapping fov
-	vr::VRTextureBounds_t bounds = CompositorBase::FovPortToTextureBounds(eye, fov);
+	// TODO: Add a setting to ignore pixelsPerDisplayPixel
+	vr::VRTextureBounds_t bounds = CompositorBase::FovPortToTextureBounds(desc->Fov, fov);
 	size.w = int((size.w * pixelsPerDisplayPixel) / (bounds.uMax - bounds.uMin));
 	size.h = int((size.h * pixelsPerDisplayPixel) / (bounds.vMax - bounds.vMin));
 
 	return size;
 }
 
-OVR_PUBLIC_FUNCTION(ovrEyeRenderDesc) ovr_GetRenderDesc(ovrSession session, ovrEyeType eyeType, ovrFovPort fov)
+OVR_PUBLIC_FUNCTION(ovrEyeRenderDesc) ovr_GetRenderDesc2(ovrSession session, ovrEyeType eyeType, ovrFovPort fov)
 {
 	REV_TRACE(ovr_GetRenderDesc);
 
-	ovrEyeRenderDesc desc;
-	desc.Eye = eyeType;
-	desc.Fov = fov;
+	// Make a copy so we can adjust a few parameters
+	ovrEyeRenderDesc desc = *session->Details->RenderDesc[eyeType];
 
-	REV::Matrix4f HmdToEyeMatrix = (REV::Matrix4f)vr::VRSystem()->GetEyeToHeadTransform((vr::EVREye)eyeType);
+	// Adjust the descriptor for the supplied field-of-view
+	desc.Fov = fov;
 	float WidthTan = fov.LeftTan + fov.RightTan;
 	float HeightTan = fov.UpTan + fov.DownTan;
-	ovrSizei size;
-	vr::VRSystem()->GetRecommendedRenderTargetSize((uint32_t*)&size.w, (uint32_t*)&size.h);
-
-	desc.DistortedViewport = OVR::Recti(eyeType == ovrEye_Right ? size.w : 0, 0, size.w, size.h);
-	desc.PixelsPerTanAngleAtCenter = OVR::Vector2f(size.w / WidthTan, size.h / HeightTan);
-	desc.HmdToEyeOffset = HmdToEyeMatrix.GetTranslation();
+	desc.PixelsPerTanAngleAtCenter = OVR::Vector2f(desc.DistortedViewport.Size.w / WidthTan, desc.DistortedViewport.Size.h / HeightTan);
 
 	return desc;
 }
 
-OVR_PUBLIC_FUNCTION(ovrResult) ovr_SubmitFrame(ovrSession session, long long frameIndex, const ovrViewScaleDesc* viewScaleDesc,
-	ovrLayerHeader const * const * layerPtrList, unsigned int layerCount)
+typedef struct OVR_ALIGNAS(4) ovrEyeRenderDesc1_ {
+	ovrEyeType Eye;
+	ovrFovPort Fov;
+	ovrRecti DistortedViewport;
+	ovrVector2f PixelsPerTanAngleAtCenter;
+	ovrVector3f HmdToEyeOffset;
+} ovrEyeRenderDesc1;
+
+OVR_PUBLIC_FUNCTION(ovrEyeRenderDesc1) ovr_GetRenderDesc(ovrSession session, ovrEyeType eyeType, ovrFovPort fov)
 {
-	REV_TRACE(ovr_SubmitFrame);
+	ovrEyeRenderDesc1 legacy = {};
+	ovrEyeRenderDesc desc = ovr_GetRenderDesc2(session, eyeType, fov);
+	memcpy(&legacy, &desc, sizeof(ovrEyeRenderDesc1));
+	legacy.HmdToEyeOffset = desc.HmdToEyePose.Position;
+	return legacy;
+}
 
-	MICROPROFILE_META_CPU("Submit Frame", (int)frameIndex);
-
-	// TODO: Implement scaling through ApplyTransform().
+OVR_PUBLIC_FUNCTION(ovrResult) ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
+{
+	REV_TRACE(ovr_WaitToBeginFrame);
+	MICROPROFILE_META_CPU("Wait Frame", (int)frameIndex);
 
 	if (!session || !session->Compositor)
 		return ovrError_InvalidSession;
 
-	if (layerCount == 0 || !layerPtrList)
-		return ovrError_InvalidParameter;
+	return session->Compositor->WaitToBeginFrame(session, frameIndex);
+}
+
+OVR_PUBLIC_FUNCTION(ovrResult) ovr_BeginFrame(ovrSession session, long long frameIndex)
+{
+	REV_TRACE(ovr_BeginFrame);
+	MICROPROFILE_META_CPU("Begin Frame", (int)frameIndex);
+
+	if (!session || !session->Compositor)
+		return ovrError_InvalidSession;
+
+	return session->Compositor->BeginFrame(session, frameIndex);
+}
+
+OVR_PUBLIC_FUNCTION(ovrResult) ovr_EndFrame(ovrSession session, long long frameIndex, const ovrViewScaleDesc* viewScaleDesc,
+	ovrLayerHeader const * const * layerPtrList, unsigned int layerCount)
+{
+	REV_TRACE(ovr_EndFrame);
+	MICROPROFILE_META_CPU("End Frame", (int)frameIndex);
+
+	if (!session || !session->Compositor)
+		return ovrError_InvalidSession;
 
 	// Use our own intermediate compositor to convert the frame to OpenVR.
-	vr::EVRCompositorError err = session->Compositor->SubmitFrame(layerPtrList, layerCount);
+	return session->Compositor->EndFrame(session, layerPtrList, layerCount);
+}
 
-	// Flip the profiler.
-	MicroProfileFlip();
+OVR_PUBLIC_FUNCTION(ovrResult) ovr_SubmitFrame2(ovrSession session, long long frameIndex, const ovrViewScaleDesc* viewScaleDesc,
+	ovrLayerHeader const * const * layerPtrList, unsigned int layerCount)
+{
+	REV_TRACE(ovr_SubmitFrame);
+	MICROPROFILE_META_CPU("Submit Frame", (int)frameIndex);
 
-	// The frame has been submitted, so we can now safely refresh some settings from the settings interface.
-	session->LoadSettings();
+	if (!session || !session->Compositor)
+		return ovrError_InvalidSession;
 
-	// Call WaitGetPoses to block until the running start, also known as queue-ahead in the Oculus SDK.
-	if (!session->Details->UseHack(SessionDetails::HACK_WAIT_IN_TRACKING_STATE))
-		vr::VRCompositor()->WaitGetPoses(nullptr, 0, nullptr, 0);
-
-	// Increment the frame index.
 	if (frameIndex == 0)
-		session->FrameIndex++;
-	else
-		session->FrameIndex = frameIndex;
+		frameIndex = session->FrameIndex;
 
-	vr::VRCompositor()->GetCumulativeStats(&session->Stats[session->FrameIndex % ovrMaxProvidedFrameStats], sizeof(vr::Compositor_CumulativeStats));
+	// Use our own intermediate compositor to convert the frame to OpenVR.
+	ovrResult result = session->Compositor->EndFrame(session, layerPtrList, layerCount);
 
-	return rev_CompositorErrorToOvrError(err);
+	// Begin the next frame
+	if (!session->Details->UseHack(SessionDetails::HACK_WAIT_IN_TRACKING_STATE))
+		session->Compositor->WaitToBeginFrame(session, frameIndex + 1);
+	session->Compositor->BeginFrame(session, frameIndex + 1);
+
+	return result;
+}
+
+typedef struct OVR_ALIGNAS(4) ovrViewScaleDesc1_ {
+	ovrVector3f HmdToEyeOffset[ovrEye_Count]; ///< Translation of each eye.
+	float HmdSpaceToWorldScaleInMeters; ///< Ratio of viewer units to meter units.
+} ovrViewScaleDesc1;
+
+OVR_PUBLIC_FUNCTION(ovrResult) ovr_SubmitFrame(ovrSession session, long long frameIndex, const ovrViewScaleDesc1* viewScaleDesc,
+	ovrLayerHeader const * const * layerPtrList, unsigned int layerCount)
+{
+	// TODO: We don't ever use viewScaleDesc so no need to do any conversion.
+	return ovr_SubmitFrame2(session, frameIndex, nullptr, layerPtrList, layerCount);
 }
 
 typedef struct OVR_ALIGNAS(4) ovrPerfStatsPerCompositorFrame1_
@@ -913,61 +920,50 @@ OVR_PUBLIC_FUNCTION(double) ovr_GetPredictedDisplayTime(ovrSession session, long
 
 	MICROPROFILE_META_CPU("Predict Frame", (int)frameIndex);
 
-	if (!session)
-		return ovrError_InvalidSession;
+	if (session->FrameIndex == 0)
+		return ovr_GetTimeInSeconds();
 
-	float fDisplayFrequency = vr::VRSystem()->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_DisplayFrequency_Float);
-	float fVsyncToPhotons = vr::VRSystem()->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_SecondsFromVsyncToPhotons_Float);
-
-	// Get the frame count and advance it based on which frame we're predicting
-	float fSecondsSinceLastVsync;
-	uint64_t unFrame;
-	vr::VRSystem()->GetTimeSinceLastVsync(&fSecondsSinceLastVsync, &unFrame);
-
-	// Round up to the next frame so we predict far enough
-	unFrame++;
-
-	// Advance the frame count based on how many frames we're predicting ahead
-	if (frameIndex == 0)
-		unFrame++;
-	else
-		unFrame += frameIndex - session->FrameIndex;
-
-	// Predict the display time based on the display frequency and the vsync-to-photon latency
-	return double(unFrame) / fDisplayFrequency + fVsyncToPhotons;
+	double predictAhead = vr::VRCompositor()->GetFrameTimeRemaining();
+	if (session && frameIndex > 0)
+	{
+		// Some applications ask for frames ahead of the current frame
+		ovrHmdDesc* pHmd = session->Details->HmdDesc;
+		predictAhead += double(frameIndex - session->FrameIndex) / pHmd->DisplayRefreshRate;
+	}
+	return ovr_GetTimeInSeconds() + predictAhead;
 }
 
 OVR_PUBLIC_FUNCTION(double) ovr_GetTimeInSeconds()
 {
 	REV_TRACE(ovr_GetTimeInSeconds);
 
-	float fDisplayFrequency = vr::VRSystem()->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_DisplayFrequency_Float);
+	static double PerfFrequencyInverse = 0.0;
+	if (PerfFrequencyInverse == 0.0)
+	{
+		LARGE_INTEGER freq;
+		QueryPerformanceFrequency(&freq);
+		PerfFrequencyInverse = 1.0 / (double)freq.QuadPart;
+	}
 
-	// Get the frame count and the time since the last VSync
-	float fSecondsSinceLastVsync;
-	uint64_t unFrame;
-	vr::VRSystem()->GetTimeSinceLastVsync(&fSecondsSinceLastVsync, &unFrame);
-
-	// Calculate the time since the first frame based on the display frequency
-	return double(unFrame) / fDisplayFrequency + fSecondsSinceLastVsync;
+	LARGE_INTEGER li;
+	QueryPerformanceCounter(&li);
+	return li.QuadPart * PerfFrequencyInverse;
 }
 
 OVR_PUBLIC_FUNCTION(ovrBool) ovr_GetBool(ovrSession session, const char* propertyName, ovrBool defaultVal)
 {
 	REV_TRACE(ovr_GetBool);
 
-	vr::EVRSettingsError error;
-	ovrBool result = vr::VRSettings()->GetBool(REV_SETTINGS_SECTION, propertyName, &error);
-	return (error == vr::VRSettingsError_None) ? result : defaultVal;
+	// TODO: Implement a cached settings interface
+	return defaultVal;
 }
 
 OVR_PUBLIC_FUNCTION(ovrBool) ovr_SetBool(ovrSession session, const char* propertyName, ovrBool value)
 {
 	REV_TRACE(ovr_SetBool);
 
-	vr::EVRSettingsError error;
-	vr::VRSettings()->SetBool(REV_SETTINGS_SECTION, propertyName, !!value, &error);
-	return error == vr::VRSettingsError_None;
+	// TODO: Implement a cached settings interface
+	return false;
 }
 
 OVR_PUBLIC_FUNCTION(int) ovr_GetInt(ovrSession session, const char* propertyName, int defaultVal)
@@ -975,20 +971,18 @@ OVR_PUBLIC_FUNCTION(int) ovr_GetInt(ovrSession session, const char* propertyName
 	REV_TRACE(ovr_GetInt);
 
 	if (strcmp("TextureSwapChainDepth", propertyName) == 0)
-		return REV_SWAPCHAIN_LENGTH;
+		return REV_SWAPCHAIN_MAX_LENGTH;
 
-	vr::EVRSettingsError error;
-	int result = vr::VRSettings()->GetInt32(REV_SETTINGS_SECTION, propertyName, &error);
-	return (error == vr::VRSettingsError_None) ? result : defaultVal;
+	// TODO: Implement a cached settings interface
+	return defaultVal;
 }
 
 OVR_PUBLIC_FUNCTION(ovrBool) ovr_SetInt(ovrSession session, const char* propertyName, int value)
 {
 	REV_TRACE(ovr_SetInt);
 
-	vr::EVRSettingsError error;
-	vr::VRSettings()->SetInt32(REV_SETTINGS_SECTION, propertyName, value, &error);
-	return error == vr::VRSettingsError_None;
+	// TODO: Implement a cached settings interface
+	return false;
 }
 
 OVR_PUBLIC_FUNCTION(float) ovr_GetFloat(ovrSession session, const char* propertyName, float defaultVal)
@@ -1004,18 +998,16 @@ OVR_PUBLIC_FUNCTION(float) ovr_GetFloat(ovrSession session, const char* property
 	else if (strcmp(propertyName, OVR_KEY_EYE_HEIGHT) == 0)
 		defaultVal = OVR_DEFAULT_EYE_HEIGHT;
 
-	vr::EVRSettingsError error;
-	float result = vr::VRSettings()->GetFloat(REV_SETTINGS_SECTION, propertyName, &error);
-	return (error == vr::VRSettingsError_None) ? result : defaultVal;
+	// TODO: Implement a cached settings interface
+	return defaultVal;
 }
 
 OVR_PUBLIC_FUNCTION(ovrBool) ovr_SetFloat(ovrSession session, const char* propertyName, float value)
 {
 	REV_TRACE(ovr_SetFloat);
 
-	vr::EVRSettingsError error;
-	vr::VRSettings()->SetFloat(REV_SETTINGS_SECTION, propertyName, value, &error);
-	return error == vr::VRSettingsError_None;
+	// TODO: Implement a cached settings interface
+	return false;
 }
 
 OVR_PUBLIC_FUNCTION(unsigned int) ovr_GetFloatArray(ovrSession session, const char* propertyName, float values[], unsigned int valuesCapacity)
@@ -1033,38 +1025,16 @@ OVR_PUBLIC_FUNCTION(unsigned int) ovr_GetFloatArray(ovrSession session, const ch
 		return 2;
 	}
 
-	char key[vr::k_unMaxSettingsKeyLength] = { 0 };
-
-	for (unsigned int i = 0; i < valuesCapacity; i++)
-	{
-		vr::EVRSettingsError error;
-		snprintf(key, vr::k_unMaxSettingsKeyLength, "%s[%d]", propertyName, i);
-		values[i] = vr::VRSettings()->GetFloat(REV_SETTINGS_SECTION, key, &error);
-
-		if (error != vr::VRSettingsError_None)
-			return i;
-	}
-
-	return valuesCapacity;
+	// TODO: Implement a cached settings interface
+	return 0;
 }
 
 OVR_PUBLIC_FUNCTION(ovrBool) ovr_SetFloatArray(ovrSession session, const char* propertyName, const float values[], unsigned int valuesSize)
 {
 	REV_TRACE(ovr_SetFloatArray);
 
-	char key[vr::k_unMaxSettingsKeyLength] = { 0 };
-
-	for (unsigned int i = 0; i < valuesSize; i++)
-	{
-		vr::EVRSettingsError error;
-		snprintf(key, vr::k_unMaxSettingsKeyLength, "%s[%d]", propertyName, i);
-		vr::VRSettings()->SetFloat(REV_SETTINGS_SECTION, key, values[i], &error);
-
-		if (error != vr::VRSettingsError_None)
-			return false;
-	}
-
-	return true;
+	// TODO: Implement a cached settings interface
+	return false;
 }
 
 OVR_PUBLIC_FUNCTION(const char*) ovr_GetString(ovrSession session, const char* propertyName, const char* defaultVal)
@@ -1078,18 +1048,16 @@ OVR_PUBLIC_FUNCTION(const char*) ovr_GetString(ovrSession session, const char* p
 	if (strcmp(propertyName, OVR_KEY_GENDER) == 0)
 		defaultVal = OVR_DEFAULT_GENDER;
 
-	vr::EVRSettingsError error;
-	vr::VRSettings()->GetString(REV_SETTINGS_SECTION, propertyName, session->StringBuffer, vr::k_unMaxPropertyStringSize, &error);
-	return (error == vr::VRSettingsError_None) ? session->StringBuffer : defaultVal;
+	// TODO: Implement a cached settings interface
+	return defaultVal;
 }
 
 OVR_PUBLIC_FUNCTION(ovrBool) ovr_SetString(ovrSession session, const char* propertyName, const char* value)
 {
 	REV_TRACE(ovr_SetString);
 
-	vr::EVRSettingsError error;
-	vr::VRSettings()->SetString(REV_SETTINGS_SECTION, propertyName, value, &error);
-	return error == vr::VRSettingsError_None;
+	// TODO: Implement a cached settings interface
+	return false;
 }
 
 OVR_PUBLIC_FUNCTION(ovrResult) ovr_Lookup(const char* name, void** data)

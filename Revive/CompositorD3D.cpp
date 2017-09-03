@@ -3,6 +3,7 @@
 
 #include <openvr.h>
 #include <d3d11.h>
+#include <d3d12.h>
 #include <wrl/client.h>
 
 #include "VertexShader.hlsl.h"
@@ -19,13 +20,17 @@ CompositorD3D* CompositorD3D::Create(IUnknown* d3dPtr)
 {
 	// Get the device for this context
 	// TODO: DX12 support
-	ID3D11Device* pDevice;
+	ID3D11Device* pDevice = nullptr;
 	HRESULT hr = d3dPtr->QueryInterface(&pDevice);
-	if (FAILED(hr))
-		return nullptr;
+	if (SUCCEEDED(hr))
+		return new CompositorD3D(pDevice);
 
-	// Attach compositor to the device
-	return new CompositorD3D(pDevice);
+	ID3D12CommandQueue* pQueue = nullptr;
+	hr = d3dPtr->QueryInterface(&pQueue);
+	if (SUCCEEDED(hr))
+		return new CompositorD3D(pQueue);
+
+	return nullptr;
 }
 
 CompositorD3D::CompositorD3D(ID3D11Device* pDevice)
@@ -68,61 +73,38 @@ CompositorD3D::CompositorD3D(ID3D11Device* pDevice)
 	m_pDevice->CreateBlendState(&bm, m_BlendState.GetAddressOf());
 
 	// Get the mirror textures
-	ID3D11ShaderResourceView *left, *right;
-	vr::VRCompositor()->GetMirrorTextureD3D11(vr::Eye_Left, m_pDevice.Get(), (void**)&left);
-	vr::VRCompositor()->GetMirrorTextureD3D11(vr::Eye_Right, m_pDevice.Get(), (void**)&right);
+	vr::VRCompositor()->GetMirrorTextureD3D11(vr::Eye_Left, m_pDevice.Get(), (void**)&m_pMirror[ovrEye_Left]);
+	vr::VRCompositor()->GetMirrorTextureD3D11(vr::Eye_Right, m_pDevice.Get(), (void**)&m_pMirror[ovrEye_Right]);
+}
 
-	// OpenVR doesn't increment the reference counter as it should, so we have to do it ourselves
-	left->AddRef();
-	right->AddRef();
-	m_pMirror[ovrEye_Left] = left;
-	m_pMirror[ovrEye_Right] = right;
+CompositorD3D::CompositorD3D(ID3D12CommandQueue* pQueue)
+	: m_pQueue(pQueue)
+	, m_pMirror()
+{
 }
 
 CompositorD3D::~CompositorD3D()
 {
+	if (m_pMirror[ovrEye_Left])
+		vr::VRCompositor()->ReleaseMirrorTextureD3D11(m_pMirror[ovrEye_Left]);
+	if (m_pMirror[ovrEye_Right])
+		vr::VRCompositor()->ReleaseMirrorTextureD3D11(m_pMirror[ovrEye_Right]);
 }
 
-ovrResult CompositorD3D::CreateTextureSwapChain(const ovrTextureSwapChainDesc* desc, ovrTextureSwapChain* out_TextureSwapChain)
+TextureBase* CompositorD3D::CreateTexture()
 {
-	ovrTextureSwapChain swapChain = new ovrTextureSwapChainData(vr::TextureType_DirectX, *desc);
-	swapChain->Identifier = m_ChainCount++;
-
-	for (int i = 0; i < swapChain->Length; i++)
-	{
-		TextureD3D* texture = new TextureD3D(m_pDevice.Get());
-		bool success = texture->Create(desc->Width, desc->Height, desc->MipLevels, desc->ArraySize, desc->Format,
-			desc->MiscFlags, desc->BindFlags);
-		if (!success)
-			return ovrError_RuntimeException;
-		swapChain->Textures[i].reset(texture);
-	}
-
-	*out_TextureSwapChain = swapChain;
-	return ovrSuccess;
+	if (m_pDevice)
+		return new TextureD3D(m_pDevice.Get());
+	else
+		return new TextureD3D(m_pQueue.Get());
 }
 
-ovrResult CompositorD3D::CreateMirrorTexture(const ovrMirrorTextureDesc* desc, ovrMirrorTexture* out_MirrorTexture)
+void CompositorD3D::RenderMirrorTexture(ovrMirrorTexture mirrorTexture)
 {
-	// There can only be one mirror texture at a time
-	if (m_MirrorTexture)
-		return ovrError_RuntimeException;
+	// TODO: Support mirror textures in DX12
+	if (!m_pDevice)
+		return;
 
-	ovrMirrorTexture mirrorTexture = new ovrMirrorTextureData(vr::TextureType_DirectX, *desc);
-	TextureD3D* texture = new TextureD3D(m_pDevice.Get());
-	bool success = texture->Create(desc->Width, desc->Height, 1, 1, desc->Format,
-		desc->MiscFlags | ovrTextureMisc_AllowGenerateMips, ovrTextureBind_DX_RenderTarget);
-	if (!success)
-		return ovrError_RuntimeException;
-	mirrorTexture->Texture.reset(texture);
-
-	m_MirrorTexture = mirrorTexture;
-	*out_MirrorTexture = mirrorTexture;
-	return ovrSuccess;
-}
-
-void CompositorD3D::RenderMirrorTexture(ovrMirrorTexture mirrorTexture, ovrTextureSwapChain swapChain[ovrEye_Count])
-{
 	// Get the current state objects
 	Microsoft::WRL::ComPtr<ID3D11BlendState> blend_state;
 	float blend_factor[4];
@@ -141,8 +123,7 @@ void CompositorD3D::RenderMirrorTexture(ovrMirrorTexture mirrorTexture, ovrTextu
 	// Set the mirror shaders
 	m_pContext->VSSetShader(m_VertexShader.Get(), NULL, 0);
 	m_pContext->PSSetShader(m_MirrorShader.Get(), NULL, 0);
-	ID3D11ShaderResourceView* resources[] = { m_pMirror[ovrEye_Left].Get(), m_pMirror[ovrEye_Right].Get() };
-	m_pContext->PSSetShaderResources(0, 2, resources);
+	m_pContext->PSSetShaderResources(0, ovrEye_Count, m_pMirror);
 
 	// Update the vertex buffer
 	Vertex vertices[4] = {
@@ -183,6 +164,10 @@ void CompositorD3D::RenderMirrorTexture(ovrMirrorTexture mirrorTexture, ovrTextu
 
 void CompositorD3D::RenderTextureSwapChain(vr::EVREye eye, ovrTextureSwapChain swapChain, ovrTextureSwapChain sceneChain, ovrRecti viewport, vr::VRTextureBounds_t bounds, vr::HmdVector4_t quad)
 {
+	// TODO: Support compositing layers in DX12
+	if (!m_pDevice)
+		return;
+
 	uint32_t width, height;
 	vr::VRSystem()->GetRecommendedRenderTargetSize(&width, &height);
 	TextureD3D* texture = (TextureD3D*)swapChain->Textures[swapChain->SubmitIndex].get();

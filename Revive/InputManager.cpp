@@ -2,6 +2,8 @@
 #include "Session.h"
 #include "SessionDetails.h"
 #include "Settings.h"
+#include "SettingsManager.h"
+#include "CompositorBase.h"
 
 #include "OVR_CAPI.h"
 #include "REV_Math.h"
@@ -17,10 +19,18 @@ InputManager::InputManager()
 	for (ovrPoseStatef& pose : m_LastPoses)
 		pose.ThePose = OVR::Posef::Identity();
 
+	// TODO: This might change if a new HMD is connected (unlikely)
+	m_fVsyncToPhotons = vr::VRSystem()->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_SecondsFromVsyncToPhotons_Float);
+
+	// TODO: XInput is slow, move it to another thread
+#if 0
 	m_InputDevices.push_back(new XboxGamepad());
+#endif
 	m_InputDevices.push_back(new OculusTouch(vr::TrackedControllerRole_LeftHand));
 	m_InputDevices.push_back(new OculusTouch(vr::TrackedControllerRole_RightHand));
 	m_InputDevices.push_back(new OculusRemote());
+
+	UpdateConnectedControllers();
 }
 
 InputManager::~InputManager()
@@ -29,7 +39,7 @@ InputManager::~InputManager()
 		delete device;
 }
 
-unsigned int InputManager::GetConnectedControllerTypes()
+void InputManager::UpdateConnectedControllers()
 {
 	uint32_t types = 0;
 	for (InputDevice* device : m_InputDevices)
@@ -37,11 +47,10 @@ unsigned int InputManager::GetConnectedControllerTypes()
 		if (device->IsConnected())
 			types |= device->GetType();
 	}
-
-	return types;
+	ConnectedControllers = types;
 }
 
-ovrResult InputManager::SetControllerVibration(ovrControllerType controllerType, float frequency, float amplitude)
+ovrResult InputManager::SetControllerVibration(ovrSession session, ovrControllerType controllerType, float frequency, float amplitude)
 {
 	// Clamp the input
 	frequency = min(max(frequency, 0.0f), 1.0f);
@@ -49,7 +58,7 @@ ovrResult InputManager::SetControllerVibration(ovrControllerType controllerType,
 
 	for (InputDevice* device : m_InputDevices)
 	{
-		if (controllerType & device->GetType() && device->IsConnected())
+		if (controllerType & device->GetType() && ConnectedControllers & device->GetType())
 			device->SetVibration(frequency, amplitude);
 	}
 
@@ -65,7 +74,7 @@ ovrResult InputManager::GetInputState(ovrSession session, ovrControllerType cont
 	uint32_t types = 0;
 	for (InputDevice* device : m_InputDevices)
 	{
-		if (controllerType & device->GetType() && device->IsConnected())
+		if (controllerType & device->GetType() && ConnectedControllers & device->GetType())
 		{
 			if (device->GetInputState(session, inputState))
 				types |= device->GetType();
@@ -76,24 +85,24 @@ ovrResult InputManager::GetInputState(ovrSession session, ovrControllerType cont
 	return ovrSuccess;
 }
 
-ovrResult InputManager::SubmitControllerVibration(ovrControllerType controllerType, const ovrHapticsBuffer* buffer)
+ovrResult InputManager::SubmitControllerVibration(ovrSession session, ovrControllerType controllerType, const ovrHapticsBuffer* buffer)
 {
 	for (InputDevice* device : m_InputDevices)
 	{
-		if (controllerType & device->GetType() && device->IsConnected())
+		if (controllerType & device->GetType() && ConnectedControllers & device->GetType())
 			device->SubmitVibration(buffer);
 	}
 
 	return ovrSuccess;
 }
 
-ovrResult InputManager::GetControllerVibrationState(ovrControllerType controllerType, ovrHapticsPlaybackState* outState)
+ovrResult InputManager::GetControllerVibrationState(ovrSession session, ovrControllerType controllerType, ovrHapticsPlaybackState* outState)
 {
 	memset(outState, 0, sizeof(ovrHapticsPlaybackState));
 
 	for (InputDevice* device : m_InputDevices)
 	{
-		if (controllerType & device->GetType() && device->IsConnected())
+		if (controllerType & device->GetType() && ConnectedControllers & device->GetType())
 			device->GetVibrationState(outState);
 	}
 
@@ -108,7 +117,7 @@ ovrTouchHapticsDesc InputManager::GetTouchHapticsDesc(ovrControllerType controll
 	{
 		desc.SampleRateHz = REV_HAPTICS_SAMPLE_RATE;
 		desc.SampleSizeInBytes = sizeof(uint8_t);
-		desc.SubmitMaxSamples = REV_HAPTICS_MAX_SAMPLES;
+		desc.SubmitMaxSamples = OVR_HAPTICS_BUFFER_SAMPLES_MAX;
 		desc.SubmitMinSamples = 1;
 		desc.SubmitOptimalSamples = 20;
 		desc.QueueMinSizeToAvoidStarvation = 5;
@@ -162,14 +171,20 @@ ovrPoseStatef InputManager::TrackedDevicePoseToOVRPose(vr::TrackedDevicePose_t p
 
 void InputManager::GetTrackingState(ovrSession session, ovrTrackingState* outState, double absTime)
 {
-	// Get the device poses
-	vr::ETrackingUniverseOrigin space = vr::VRCompositor()->GetTrackingSpace();
-	float relTime = absTime > 0.0f ? float(absTime - ovr_GetTimeInSeconds()) : 0.0f;
-	vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
 	if (session->Details->UseHack(SessionDetails::HACK_WAIT_IN_TRACKING_STATE))
-		vr::VRCompositor()->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
-	else
-		vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(space, relTime, poses, vr::k_unMaxTrackedDeviceCount);
+		vr::VRCompositor()->WaitGetPoses(nullptr, 0, nullptr, 0);
+
+	// Calculate the relative prediction time
+	float relTime = 0.0f;
+	if (absTime > 0.0f)
+		relTime = float(absTime - ovr_GetTimeInSeconds());
+	if (relTime > 0.0f)
+		relTime += m_fVsyncToPhotons;
+
+	// Get the device poses
+	vr::ETrackingUniverseOrigin origin = session->TrackingOrigin;
+	vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
+	vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(origin, relTime, poses, vr::k_unMaxTrackedDeviceCount);
 
 	// Convert the head pose
 	outState->HeadPose = TrackedDevicePoseToOVRPose(poses[vr::k_unTrackedDeviceIndex_Hmd], m_LastPoses[vr::k_unTrackedDeviceIndex_Hmd], absTime);
@@ -188,12 +203,12 @@ void InputManager::GetTrackingState(ovrSession session, ovrTrackingState* outSta
 		}
 
 		vr::TrackedDevicePose_t pose;
-		vr::VRSystem()->ApplyTransform(&pose, &poses[deviceIndex], &session->TouchOffset[i]);
+		vr::VRSystem()->ApplyTransform(&pose, &poses[deviceIndex], &session->Settings->TouchOffset[i]);
 		outState->HandPoses[i] = TrackedDevicePoseToOVRPose(pose, m_LastPoses[deviceIndex], absTime);
 		outState->HandStatusFlags[i] = TrackedDevicePoseToOVRStatusFlags(poses[deviceIndex]);
 	}
 
-	if (space == vr::TrackingUniverseSeated)
+	if (origin == vr::TrackingUniverseSeated)
 	{
 		REV::Matrix4f origin = (REV::Matrix4f)vr::VRSystem()->GetSeatedZeroPoseToStandingAbsoluteTrackingPose();
 
@@ -345,7 +360,7 @@ ovrControllerType InputManager::OculusTouch::GetType()
 	return m_Role == vr::TrackedControllerRole_LeftHand ? ovrControllerType_LTouch : ovrControllerType_RTouch;
 }
 
-bool InputManager::OculusTouch::IsConnected()
+bool InputManager::OculusTouch::IsConnected() const
 {
 	// Check if the Vive controller is assigned
 	vr::TrackedDeviceIndex_t touch = vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(m_Role);
@@ -357,6 +372,8 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 	// Get controller index
 	vr::TrackedDeviceIndex_t touch = vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(m_Role);
 	ovrHandType hand = (m_Role == vr::TrackedControllerRole_LeftHand) ? ovrHand_Left : ovrHand_Right;
+
+	SettingsManager* settings = session->Settings.get();
 
 	if (touch == vr::k_unTrackedDeviceIndexInvalid)
 		return false;
@@ -385,7 +402,7 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 		touches |= (hand == ovrHand_Left) ? ovrTouch_Y : ovrTouch_B;
 
 	// Allow users to enable a toggled grip.
-	if (session->ToggleGrip == revGrip_Hybrid)
+	if (settings->ToggleGrip == revGrip_Hybrid)
 	{
 		if (IsPressed(state, vr::k_EButton_Grip))
 		{
@@ -398,14 +415,14 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 
 		if (IsReleased(state, vr::k_EButton_Grip))
 		{
-			if (ovr_GetTimeInSeconds() - m_GrippedTime > session->ToggleDelay)
+			if (ovr_GetTimeInSeconds() - m_GrippedTime > settings->ToggleDelay)
 				m_Gripped = false;
 
 			// Next time we always want to release grip
 			m_GrippedTime = 0.0;
 		}
 	}
-	else if (session->ToggleGrip == revGrip_Toggle)
+	else if (settings->ToggleGrip == revGrip_Toggle)
 	{
 		if (IsPressed(state, vr::k_EButton_Grip))
 			m_Gripped = !m_Gripped;
@@ -443,17 +460,17 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 			inputState->ThumbstickNoDeadzone[hand].y = axis.y;
 
 			//check if the controller is outside a circular dead zone
-			if (magnitude > session->Deadzone)
+			if (magnitude > session->Settings->Deadzone)
 			{
 				//clip the magnitude at its expected maximum value
 				if (magnitude > 1.0f) magnitude = 1.0f;
 
 				//adjust magnitude relative to the end of the dead zone
-				magnitude -= session->Deadzone;
+				magnitude -= settings->Deadzone;
 
 				//optionally normalize the magnitude with respect to its expected range
 				//giving a magnitude value of 0.0 to 1.0
-				float normalizedMagnitude = magnitude / (1.0f - session->Deadzone);
+				float normalizedMagnitude = magnitude / (1.0f - settings->Deadzone);
 				inputState->Thumbstick[hand].x = normalizedMagnitude * axis.x;
 				inputState->Thumbstick[hand].y = normalizedMagnitude * axis.y;
 			}
@@ -474,7 +491,7 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 				if (m_StickTouched && m_LastState.ulButtonTouched & vr::ButtonMaskFromId(button))
 				{
 					OVR::Vector2f delta(lastAxis.x - axis.x, lastAxis.y - axis.y);
-					m_ThumbStick -= delta * session->Sensitivity;
+					m_ThumbStick -= delta * settings->Sensitivity;
 
 					// Determine how far the controller is pushed
 					float magnitude = sqrt(m_ThumbStick.x*m_ThumbStick.x + m_ThumbStick.y*m_ThumbStick.y);
@@ -487,14 +504,14 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 						if (magnitude > 1.0f) magnitude = 1.0f;
 						m_ThumbStick = normalized * magnitude;
 
-						if (magnitude > session->Deadzone)
+						if (magnitude > settings->Deadzone)
 						{
 							// Adjust magnitude relative to the end of the dead zone
-							magnitude -= session->Deadzone;
+							magnitude -= settings->Deadzone;
 
 							// Optionally normalize the magnitude with respect to its expected range
 							// giving a magnitude value of 0.0 to 1.0
-							float normalizedMagnitude = magnitude / (1.0f - session->Deadzone);
+							float normalizedMagnitude = magnitude / (1.0f - settings->Deadzone);
 							inputState->Thumbstick[hand].x = m_ThumbStick.x * normalizedMagnitude;
 							inputState->Thumbstick[hand].y = m_ThumbStick.y * normalizedMagnitude;
 
@@ -543,7 +560,7 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 		}
 	}
 
-	if (session->TriggerAsGrip && !m_Gripped)
+	if (settings->TriggerAsGrip && !m_Gripped)
 		std::swap(inputState->HandTrigger[hand], inputState->IndexTrigger[hand]);
 
 	// We don't apply deadzones yet on triggers and grips
@@ -564,7 +581,7 @@ bool InputManager::OculusTouch::GetInputState(ovrSession session, ovrInputState*
 	return true;
 }
 
-bool InputManager::OculusRemote::IsConnected()
+bool InputManager::OculusRemote::IsConnected() const
 {
 	// Check if a Vive controller is available
 	uint32_t controllerCount = vr::VRSystem()->GetSortedTrackedDeviceIndicesOfClass(vr::TrackedDeviceClass_Controller, nullptr, 0);
@@ -642,7 +659,7 @@ InputManager::XboxGamepad::~XboxGamepad()
 	FreeLibrary(m_XInput);
 }
 
-bool InputManager::XboxGamepad::IsConnected()
+bool InputManager::XboxGamepad::IsConnected() const
 {
 	if (!m_XInput)
 		return false;

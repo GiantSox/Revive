@@ -2,6 +2,7 @@
 #include "CompositorBase.h"
 
 #include <d3d11.h>
+#include <d3d12.h>
 #include <wrl/client.h>
 #include <openvr.h>
 
@@ -10,23 +11,24 @@ class CompositorD3D :
 {
 public:
 	CompositorD3D(ID3D11Device* pDevice);
+	CompositorD3D(ID3D12CommandQueue* pQueue);
 	virtual ~CompositorD3D();
 
 	static CompositorD3D* Create(IUnknown* d3dPtr);
 	virtual vr::ETextureType GetAPI() { return vr::TextureType_DirectX; };
-	virtual void Flush() { m_pContext->Flush(); };
+	virtual void Flush() { if (m_pContext) m_pContext->Flush(); };
+	virtual TextureBase* CreateTexture();
 
-	// Texture Swapchain
-	virtual ovrResult CreateTextureSwapChain(const ovrTextureSwapChainDesc* desc, ovrTextureSwapChain* out_TextureSwapChain);
 	virtual void RenderTextureSwapChain(vr::EVREye eye, ovrTextureSwapChain swapChain, ovrTextureSwapChain sceneChain, ovrRecti viewport, vr::VRTextureBounds_t bounds, vr::HmdVector4_t quad);
-
-	// Mirror Texture
-	virtual ovrResult CreateMirrorTexture(const ovrMirrorTextureDesc* desc, ovrMirrorTexture* out_MirrorTexture);
-	virtual void RenderMirrorTexture(ovrMirrorTexture mirrorTexture, ovrTextureSwapChain swapChain[ovrEye_Count]);
+	virtual void RenderMirrorTexture(ovrMirrorTexture mirrorTexture);
 
 protected:
+	// DirectX 11
 	Microsoft::WRL::ComPtr<ID3D11Device> m_pDevice;
 	Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_pContext;
+
+	// DirectX 12
+	Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pQueue;
 
 	// Shaders
 	Microsoft::WRL::ComPtr<ID3D11VertexShader> m_VertexShader;
@@ -41,5 +43,5 @@ protected:
 	Microsoft::WRL::ComPtr<ID3D11BlendState> m_BlendState;
 
 	// Mirror
-	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_pMirror[ovrEye_Count];
+	ID3D11ShaderResourceView* m_pMirror[ovrEye_Count];
 };

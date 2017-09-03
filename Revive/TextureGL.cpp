@@ -16,7 +16,7 @@ TextureGL::~TextureGL()
 
 vr::VRTextureWithPose_t TextureGL::ToVRTexture()
 {
-	vr::VRTextureWithPose_t texture;
+	vr::VRTextureWithPose_t texture = {};
 	texture.eColorSpace = vr::ColorSpace_Auto; // TODO: Set this from the texture format
 	texture.eType = vr::TextureType_OpenGL;
 #pragma warning( disable : 4312 )
@@ -71,7 +71,7 @@ GLenum TextureGL::TextureFormatToGLFormat(ovrTextureFormat format)
 	}
 }
 
-bool TextureGL::Create(int Width, int Height, int MipLevels, int ArraySize,
+bool TextureGL::Init(ovrTextureType type, int Width, int Height, int MipLevels, int ArraySize,
 	ovrTextureFormat Format, unsigned int MiscFlags, unsigned int BindFlags)
 {
 	GLenum internalFormat = TextureFormatToInternalFormat(Format);
@@ -83,11 +83,15 @@ bool TextureGL::Create(int Width, int Height, int MipLevels, int ArraySize,
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
 	glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, Width, Height, 0, format, GL_UNSIGNED_BYTE, nullptr);
 
-	glGenFramebuffers(1, &Framebuffer);
-	glBindFramebuffer(GL_FRAMEBUFFER, Framebuffer);
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Texture, 0);
-	glReadBuffer(GL_COLOR_ATTACHMENT0);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	if (BindFlags & ovrTextureBind_DX_RenderTarget)
+	{
+		glGenFramebuffers(1, &Framebuffer);
+		glBindFramebuffer(GL_FRAMEBUFFER, Framebuffer);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Texture, 0);
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
+		glDrawBuffer(GL_COLOR_ATTACHMENT0);
+		return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+	}
 
-	return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+	return true;
 }
