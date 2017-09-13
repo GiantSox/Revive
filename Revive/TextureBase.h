@@ -2,7 +2,6 @@
 
 #include "OVR_CAPI.h"
 #include "openvr.h"
-#include "openvr_beta.h"
 
 #include <memory>
 
@@ -30,7 +29,7 @@ struct ovrTextureSwapChainData
 
 	bool Full() { return (CurrentIndex + 1) % Length == SubmitIndex; }
 	void Commit() { CurrentIndex++; CurrentIndex %= Length; };
-	void Submit() { SubmitIndex++; SubmitIndex %= Length; };
+	void Submit() { SubmitIndex = CurrentIndex; };
 
 	ovrTextureSwapChainData(ovrTextureSwapChainDesc desc);
 	~ovrTextureSwapChainData();
